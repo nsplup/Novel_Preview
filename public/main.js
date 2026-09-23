@@ -610,6 +610,7 @@
     overscroll-behavior: contain;
     scrollbar-width: thin;
     contain: strict;
+    padding-top: 4px;
     padding-bottom: 4px;
   }
 
@@ -761,6 +762,7 @@
     scrollbar-width: thin;
     contain: strict;
     text-align: left;
+    padding-top: 3px;
     padding-bottom: 3px;
   }
 

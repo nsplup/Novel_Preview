@@ -19,8 +19,8 @@
   const DECODE_CHUNK = 1024 * 1024
   const SAVE_DELAY = 700
 
-  const TOC_ITEM_H = 48
-  const SEARCH_ITEM_H = 68
+  const TOC_ITEM_H = 48      // .np-toc-item: 44 + 2*2 margin
+  const SEARCH_ITEM_H = 66   // .np-result:   64 + 2*1 margin
   const OVERSCAN = 6
 
   const ENCODINGS = [
@@ -47,7 +47,7 @@
   /* ================================================================
    * 工具
    * ================================================================ */
-  function isMobile () {
+  function isMobile() {
     const ua = navigator.userAgent || ''
     if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|Windows Phone|IEMobile|Opera Mini|Mobi/i.test(ua)) return true
     if (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua)) return true
@@ -56,7 +56,7 @@
 
   const MOBILE = isMobile()
 
-  function escapeHtml (s) {
+  function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]))
@@ -64,14 +64,44 @@
 
   const nextFrame = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
 
-  function isTextFile (entry) {
+  function isTextFile(entry) {
     return entry && entry.ext && TEXT_EXTENSIONS.includes(String(entry.ext).toLowerCase())
+  }
+
+  function ensureViewport() {
+    const head = document.head || document.getElementsByTagName('head')[0]
+    if (!head) return
+
+    let meta = head.querySelector('meta[name="viewport"]')
+
+    if (!meta) {
+      meta = document.createElement('meta')
+      meta.setAttribute('name', 'viewport')
+      meta.setAttribute('content', 'width=device-width, initial-scale=1')
+      head.appendChild(meta)
+      return
+    }
+
+    // 如果已存在，提取现有的 content 转化成键值对进行精细化更新/补充
+    let content = meta.getAttribute('content') || ''
+
+    // 简易替换或拼接示例：确保 width 和 initial-scale 正确
+    if (!/width\s*=\s*device-width/i.test(content)) {
+      content = content.replace(/width\s*=\s*[^,]+/i, '').trim()
+      content = content ? `${content}, width=device-width` : 'width=device-width'
+    }
+    if (!/initial-scale\s*=\s*1/i.test(content)) {
+      content = content.replace(/initial-scale\s*=\s*[^,]+/i, '').trim()
+      content = content ? `${content}, initial-scale=1` : 'initial-scale=1'
+    }
+
+    meta.setAttribute('content', content.replace(/^,\s*|,\s*$/g, ''))
   }
 
   /* ================================================================
    * 编码识别
    * ================================================================ */
-  function isValidUtf8 (bytes) {
+  function isValidUtf8(bytes) {
     let i = 0
     const len = bytes.length
     while (i < len) {
@@ -92,7 +122,7 @@
     return true
   }
 
-  function detectEncoding (buffer) {
+  function detectEncoding(buffer) {
     const bytes = new Uint8Array(buffer)
     if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) return 'utf-8'
     if (bytes.length >= 2) {
@@ -129,7 +159,7 @@
     /^\d{1,4}\s+\S.{0,40}$/
   ]
 
-  function isTitleLine (text) {
+  function isTitleLine(text) {
     if (!text) return false
     if (text.length < 2 || text.length > 40) return false
     if (/[，。！？；：、,\.!?;:]$/.test(text)) return false
@@ -139,7 +169,7 @@
     return false
   }
 
-  function splitChapters (paragraphs) {
+  function splitChapters(paragraphs) {
     const chapters = []
     let current = null
 
@@ -162,12 +192,24 @@
   }
 
   /* ================================================================
-   * 虚拟列表
+   * 虚拟列表（支持元素回收）
+   *
+   *  renderItem(item, el) 约定：
+   *    - el 为 undefined  → 创建并返回新元素
+   *    - el 为已有元素     → 原地更新并返回该元素
+   *
+   *  内部维护：
+   *    mounted : Map<index, HTMLElement>  当前挂在 DOM 上的元素
+   *    pool    : HTMLElement[]            已回收、可复用的空闲元素
    * ================================================================ */
-  function createVirtualList ({ container, itemHeight, overscan = OVERSCAN, renderItem }) {
+  function createVirtualList({ container, itemHeight, overscan = OVERSCAN, renderItem }) {
     let items = []
-    let range = { start: -1, end: -1 }
+    let start = -1
+    let end = -1
     let rafId = 0
+
+    const mounted = new Map()
+    const pool = []
 
     container.innerHTML = ''
 
@@ -189,27 +231,74 @@
     layer.style.willChange = 'transform'
     total.appendChild(layer)
 
-    function doUpdate () {
-      if (!items.length) return
-      const st = container.scrollTop
-      const vh = container.clientHeight || 1
-      const start = Math.max(0, Math.floor(st / itemHeight) - overscan)
-      const end = Math.min(items.length, Math.ceil((st + vh) / itemHeight) + overscan)
-
-      if (start === range.start && end === range.end) return
-      range = { start, end }
-
-      layer.style.transform = `translate3d(0, ${start * itemHeight}px, 0)`
-
-      const frag = document.createDocumentFragment()
-      for (let i = start; i < end; i++) {
-        frag.appendChild(renderItem(items[i], i))
-      }
-      layer.innerHTML = ''
-      layer.appendChild(frag)
+    function place(el, index) {
+      el.style.transform = `translate3d(0, ${index * itemHeight}px, 0)`
     }
 
-    function schedule () {
+    function detach(el) {
+      if (el.parentNode) el.parentNode.removeChild(el)
+    }
+
+    /* 从池中取元素（或新建），写入内容并定位 */
+    function acquire(index) {
+      const cached = pool.pop()
+      const isNew = !cached
+      const el = renderItem(items[index], cached) || cached
+      if (isNew) {
+        el.style.position = 'absolute'
+        el.style.top = '0'
+        el.style.left = '0'
+        el.style.willChange = 'transform'
+      }
+      place(el, index)
+      return el
+    }
+
+    function recycleAll() {
+      mounted.forEach((el) => {
+        detach(el)
+        pool.push(el)
+      })
+      mounted.clear()
+    }
+
+    function doUpdate() {
+      if (!items.length) return
+
+      const st = container.scrollTop
+      const vh = container.clientHeight || 1
+      const s = Math.max(0, Math.floor(st / itemHeight) - overscan)
+      const e = Math.min(items.length, Math.ceil((st + vh) / itemHeight) + overscan)
+
+      if (s === start && e === end) return
+      start = s
+      end = e
+
+      /* 1. 回收移出可视区的元素 */
+      const dead = []
+      mounted.forEach((el, i) => {
+        if (i < s || i >= e) dead.push(i)
+      })
+      for (let k = 0; k < dead.length; k++) {
+        const i = dead[k]
+        const el = mounted.get(i)
+        mounted.delete(i)
+        detach(el)
+        pool.push(el)
+      }
+
+      /* 2. 挂载新进入可视区的元素（优先复用池中元素） */
+      const frag = document.createDocumentFragment()
+      for (let i = s; i < e; i++) {
+        if (mounted.has(i)) continue
+        const el = acquire(i)
+        mounted.set(i, el)
+        frag.appendChild(el)
+      }
+      if (frag.childNodes.length) layer.appendChild(frag)
+    }
+
+    function schedule() {
       if (rafId) return
       rafId = requestAnimationFrame(() => {
         rafId = 0
@@ -220,36 +309,46 @@
     container.addEventListener('scroll', schedule, { passive: true })
 
     if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(() => {
-        range = { start: -1, end: -1 }
-        schedule()
-      })
+      const ro = new ResizeObserver(() => { schedule() })
       ro.observe(container)
     }
 
-    function setItems (newItems) {
+    function setItems(newItems) {
       items = newItems || []
       emptyEl.style.display = 'none'
       total.style.display = ''
-      total.style.height = (items.length * itemHeight + 40) + 'px'
-      range = { start: -1, end: -1 }
+      total.style.height = (items.length * itemHeight) + 'px'
+
+      recycleAll()
+      start = -1
+      end = -1
       container.scrollTop = 0
       doUpdate()
     }
 
-    function showEmpty (message) {
+    function showEmpty(message) {
       items = []
+      recycleAll()
       total.style.height = '0px'
       total.style.display = 'none'
-      layer.innerHTML = ''
-      range = { start: -1, end: -1 }
+      start = -1
+      end = -1
       emptyEl.textContent = message || ''
       emptyEl.style.display = ''
       container.scrollTop = 0
     }
 
-    function refresh () {
-      range = { start: -1, end: -1 }
+    /* 原地重渲染当前已挂载的元素（不动 DOM 结构） */
+    function refresh() {
+      if (!items.length) return
+      mounted.forEach((el, i) => {
+        if (i < items.length) {
+          renderItem(items[i], el)
+          place(el, i)
+        }
+      })
+      start = -1
+      end = -1
       doUpdate()
     }
 
@@ -437,7 +536,6 @@
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
-    /* 顶栏高度减去行高造成的视觉半行距，让首行紧贴工具栏 */
     padding: 20px;
     font-size: var(--np-font-size);
     line-height: var(--np-line-height);
@@ -453,7 +551,6 @@
   }
   .np-reader p.np-flash {
     animation: np-flash 1.6s ease;
-    border-radius: 4px;
   }
   @keyframes np-flash {
     0%, 55% { background: rgba(255,205,0,.30); }
@@ -513,6 +610,7 @@
     overscroll-behavior: contain;
     scrollbar-width: thin;
     contain: strict;
+    padding-bottom: 4px;
   }
 
   /* ---------- 目录项（当前项与非当前项等高） ---------- */
@@ -663,7 +761,19 @@
     scrollbar-width: thin;
     contain: strict;
     text-align: left;
+    padding-bottom: 3px;
   }
+
+  .np-search-tip {
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    font-size: 11.5px;
+    line-height: 1.4;
+    text-align: center;
+    opacity: .55;
+    border-top: .5px solid var(--np-line);
+  }
+  .np-search-tip[hidden] { display: none; }
 
   /* ---------- 搜索结果项（紧凑版） ---------- */
   .np-result {
@@ -809,7 +919,7 @@
   let root, headerEl, titleEl, readerEl
   let prevBtn, nextBtn, chapterLabel
   let tocPanel, tocList, tocMeta
-  let searchPanel, searchInput, searchInputWrap, searchList
+  let searchPanel, searchInput, searchInputWrap, searchList, searchTip
   let loadingEl, loadingText, progressEl, progressBar
   let tocVirtual = null
   let searchVirtual = null
@@ -817,7 +927,7 @@
   /* ================================================================
    * 构建 UI
    * ================================================================ */
-  function buildUI () {
+  function buildUI() {
     const style = document.createElement('style')
     style.textContent = CSS_TEXT
 
@@ -866,6 +976,7 @@
           </div>
         </div>
         <div class="np-search-list"></div>
+        <div class="np-search-tip" hidden></div>
       </div>
 
       <div class="np-loading">
@@ -896,6 +1007,7 @@
     searchInput = root.querySelector('.np-search-input')
     searchInputWrap = root.querySelector('.np-search-input-wrap')
     searchList = root.querySelector('.np-search-list')
+    searchTip = root.querySelector('.np-search-tip')
 
     loadingEl = root.querySelector('.np-loading')
     loadingText = root.querySelector('.np-loading-text')
@@ -921,7 +1033,7 @@
   /* ================================================================
    * 布局尺寸同步
    * ================================================================ */
-  function syncLayoutMetrics () {
+  function syncLayoutMetrics() {
     if (!headerEl) return
     const h = headerEl.offsetHeight
     if (h > 0) root.style.setProperty('--np-header-h', h + 'px')
@@ -930,16 +1042,16 @@
   /* ================================================================
    * 事件绑定
    * ================================================================ */
-  function bindEvents () {
+  function bindEvents() {
     root.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-act]')
       if (!btn || !root.contains(btn)) return
       switch (btn.dataset.act) {
-        case 'close':       close(); break
-        case 'prev':        goPrev(); break
-        case 'next':        goNext(); break
-        case 'toc':         openToc(); break
-        case 'closeToc':    closeToc(); break
+        case 'close': close(); break
+        case 'prev': goPrev(); break
+        case 'next': goNext(); break
+        case 'toc': openToc(); break
+        case 'closeToc': closeToc(); break
         case 'search':
           if (searchPanel.classList.contains('np-visible')) closeSearch()
           else openSearch()
@@ -950,8 +1062,8 @@
           renderSearchPlaceholder()
           searchInput.focus()
           break
-        case 'fontUp':      changeFontSize(FONT_STEP); break
-        case 'fontDown':    changeFontSize(-FONT_STEP); break
+        case 'fontUp': changeFontSize(FONT_STEP); break
+        case 'fontDown': changeFontSize(-FONT_STEP); break
       }
     })
 
@@ -1016,7 +1128,7 @@
     document.addEventListener('fullscreenchange', syncLayoutMetrics)
   }
 
-  function updateSearchHasValue () {
+  function updateSearchHasValue() {
     if (!searchInputWrap) return
     searchInputWrap.classList.toggle('np-has-value', searchInput.value.length > 0)
   }
@@ -1024,7 +1136,7 @@
   /* ================================================================
    * 加载层
    * ================================================================ */
-  function showLoading (text, pct, determinate) {
+  function showLoading(text, pct, determinate) {
     loadingEl.classList.remove('np-hidden')
     loadingText.textContent = text
     if (determinate) {
@@ -1036,14 +1148,14 @@
     }
   }
 
-  function hideLoading () {
+  function hideLoading() {
     loadingEl.classList.add('np-hidden')
   }
 
   /* ================================================================
    * 全屏
    * ================================================================ */
-  function requestFullscreen () {
+  function requestFullscreen() {
     if (!MOBILE) return
     if (document.fullscreenElement) return
     const el = document.documentElement
@@ -1051,37 +1163,37 @@
     if (!fn) return
     try {
       const p = fn.call(el, { navigationUI: 'hide' })
-      if (p && typeof p.catch === 'function') p.catch(() => {})
+      if (p && typeof p.catch === 'function') p.catch(() => { })
     } catch (e) { /* ignore */ }
   }
 
-  function exitFullscreen () {
+  function exitFullscreen() {
     if (!MOBILE) return
     if (!document.fullscreenElement) return
     try {
       const p = document.exitFullscreen()
-      if (p && typeof p.catch === 'function') p.catch(() => {})
+      if (p && typeof p.catch === 'function') p.catch(() => { })
     } catch (e) { /* ignore */ }
   }
 
   /* ================================================================
    * 字号
    * ================================================================ */
-  function loadFontSize () {
+  function loadFontSize() {
     const v = parseInt(localStorage.getItem(LS_FONT), 10)
     if (Number.isFinite(v) && v >= FONT_MIN && v <= FONT_MAX) return v
     return FONT_DEFAULT
   }
 
-  function applyFontSize () {
+  function applyFontSize() {
     root.style.setProperty('--np-font-size', fontSize + 'px')
   }
 
-  function changeFontSize (delta) {
+  function changeFontSize(delta) {
     const next = Math.min(FONT_MAX, Math.max(FONT_MIN, fontSize + delta))
     if (next === fontSize) return
     fontSize = next
-    try { localStorage.setItem(LS_FONT, String(fontSize)) } catch (e) {}
+    try { localStorage.setItem(LS_FONT, String(fontSize)) } catch (e) { }
     applyFontSize()
 
     const anchor = currentLine
@@ -1098,7 +1210,7 @@
   /* ================================================================
    * 阅读进度
    * ================================================================ */
-  function loadProgress (key) {
+  function loadProgress(key) {
     try {
       const raw = localStorage.getItem(LS_PROGRESS + key)
       if (!raw) return {}
@@ -1107,19 +1219,19 @@
     } catch (e) { return {} }
   }
 
-  function scheduleSaveProgress () {
+  function scheduleSaveProgress() {
     clearTimeout(saveTimer)
     saveTimer = setTimeout(saveProgressNow, SAVE_DELAY)
   }
 
-  function saveProgressNow () {
+  function saveProgressNow() {
     if (!progressKey) return
     try {
       localStorage.setItem(LS_PROGRESS + progressKey, JSON.stringify(progress))
     } catch (e) { /* ignore */ }
   }
 
-  function onReaderScroll () {
+  function onReaderScroll() {
     if (scrollRaf) return
     scrollRaf = requestAnimationFrame(() => {
       scrollRaf = 0
@@ -1127,7 +1239,7 @@
     })
   }
 
-  function updateCurrentLine () {
+  function updateCurrentLine() {
     const len = lineOffsets.length
     if (!len) return
     const top = readerEl.scrollTop + 6
@@ -1148,7 +1260,7 @@
     }
   }
 
-  function cacheLineOffsets () {
+  function cacheLineOffsets() {
     const kids = readerEl.children
     lineOffsets = new Array(kids.length)
     for (let i = 0; i < kids.length; i++) {
@@ -1159,7 +1271,7 @@
   /* ================================================================
    * 章节渲染
    * ================================================================ */
-  function renderChapter (index, opts) {
+  function renderChapter(index, opts) {
     if (!chapters.length) return
     index = Math.max(0, Math.min(chapters.length - 1, index))
     const ch = chapters[index]
@@ -1196,7 +1308,7 @@
     updateNav()
   }
 
-  function updateNav () {
+  function updateNav() {
     prevBtn.disabled = currentIndex <= 0
     nextBtn.disabled = currentIndex >= chapters.length - 1
     const ch = chapters[currentIndex]
@@ -1204,52 +1316,68 @@
     chapterLabel.title = ch ? ch.title : ''
   }
 
-  function goPrev () {
+  function goPrev() {
     if (currentIndex > 0) renderChapter(currentIndex - 1)
   }
 
-  function goNext () {
+  function goNext() {
     if (currentIndex < chapters.length - 1) renderChapter(currentIndex + 1)
   }
 
   /* ================================================================
-   * 目录
+   * 目录项渲染（可复用：el 传入则原地更新）
    * ================================================================ */
-  function renderTocItem (item) {
+  function renderTocItem(item, el) {
     const { ch, i } = item
-    const btn = document.createElement('button')
-    btn.type = 'button'
-    btn.className = 'np-toc-item' + (i === currentIndex ? ' np-current' : '')
 
-    const idx = document.createElement('span')
-    idx.className = 'np-toc-index'
-    idx.textContent = String(i + 1)
+    if (!el) {
+      el = document.createElement('button')
+      el.type = 'button'
+      el.className = 'np-toc-item'
 
-    const name = document.createElement('span')
-    name.className = 'np-toc-name'
-    name.textContent = ch.title
-    name.title = ch.title
+      const idx = document.createElement('span')
+      idx.className = 'np-toc-index'
 
-    const prog = document.createElement('span')
-    prog.className = 'np-toc-progress'
-    const readLine = progress[i]
-    if (typeof readLine === 'number' && readLine > 0) {
-      prog.textContent = `第 ${readLine + 1} 行`
-    } else {
-      prog.textContent = ''
-      prog.classList.add('np-empty')
+      const name = document.createElement('span')
+      name.className = 'np-toc-name'
+
+      const prog = document.createElement('span')
+      prog.className = 'np-toc-progress'
+
+      el.append(idx, name, prog)
+      el._idx = idx
+      el._name = name
+      el._prog = prog
+
+      el.addEventListener('click', () => {
+        const it = el._item
+        if (!it) return
+        closeToc()
+        renderChapter(it.i)
+      })
     }
 
-    btn.append(idx, name, prog)
-    btn.addEventListener('click', () => {
-      closeToc()
-      renderChapter(i)
-    })
+    el._item = item
+    el.classList.toggle('np-current', i === currentIndex)
 
-    return btn
+    el._idx.textContent = String(i + 1)
+
+    el._name.textContent = ch.title
+    el._name.title = ch.title
+
+    const readLine = progress[i]
+    if (typeof readLine === 'number' && readLine > 0) {
+      el._prog.textContent = `第 ${readLine + 1} 行`
+      el._prog.classList.remove('np-empty')
+    } else {
+      el._prog.textContent = ''
+      el._prog.classList.add('np-empty')
+    }
+
+    return el
   }
 
-  function openToc () {
+  function openToc() {
     tocPanel.classList.add('np-visible')
 
     const items = chapters.map((ch, i) => ({ ch, i }))
@@ -1269,37 +1397,49 @@
     }, 30)
   }
 
-  function closeToc () {
+  function closeToc() {
     tocPanel.classList.remove('np-visible')
   }
 
   /* ================================================================
    * 搜索
    * ================================================================ */
-  function openSearch () {
+  function openSearch() {
     syncLayoutMetrics()
     searchPanel.classList.add('np-visible')
-    if (!searchList.querySelector('.np-result')) renderSearchPlaceholder()
+    if (!searchInput.value.trim()) renderSearchPlaceholder()
     requestAnimationFrame(() => {
       try { searchInput.focus({ preventScroll: true }) } catch (e) { searchInput.focus() }
     })
   }
 
-  function closeSearch (silent) {
+  function closeSearch(silent) {
     searchPanel.classList.remove('np-visible')
     if (!silent) searchInput.blur()
   }
 
-  function renderSearchPlaceholder () {
+  function setSearchTip(text) {
+    if (!searchTip) return
+    if (text) {
+      searchTip.textContent = text
+      searchTip.hidden = false
+    } else {
+      searchTip.textContent = ''
+      searchTip.hidden = true
+    }
+  }
+
+  function renderSearchPlaceholder() {
+    setSearchTip('')
     searchVirtual.showEmpty('输入关键词开始搜索')
   }
 
-  function scheduleSearch () {
+  function scheduleSearch() {
     clearTimeout(searchTimer)
     searchTimer = setTimeout(() => runSearch(searchInput.value), 200)
   }
 
-  function makeSnippet (text, hitStart, hitLen, maxLen) {
+  function makeSnippet(text, hitStart, hitLen, maxLen) {
     let start = 0
     let end = text.length
 
@@ -1319,7 +1459,7 @@
       (end < text.length ? '…' : '')
   }
 
-  function runSearch (raw) {
+  function runSearch(raw) {
     const q = String(raw || '').trim()
 
     if (!q) {
@@ -1366,54 +1506,61 @@
     }
 
     if (!results.length) {
+      setSearchTip('')
       searchVirtual.showEmpty('未找到匹配内容')
       return
     }
 
+    setSearchTip(truncated ? `结果过多，仅显示前 ${SEARCH_MAX} 条` : '')
     searchVirtual.setItems(results)
-
-    if (truncated) {
-      const tip = document.createElement('div')
-      tip.className = 'np-empty'
-      tip.textContent = `结果过多，仅显示前 ${SEARCH_MAX} 条`
-      searchList.appendChild(tip)
-      const olds = searchList.querySelectorAll('.np-empty')
-      for (let i = 0; i < olds.length - 1; i++) {
-        if (olds[i].parentNode === searchList) olds[i].remove()
-      }
-    }
   }
 
-  function renderSearchItem (r) {
+  /* ================================================================
+   * 搜索结果项渲染（可复用：el 传入则原地更新）
+   * ================================================================ */
+  function renderSearchItem(r, el) {
     const ch = chapters[r.ci]
-    const btn = document.createElement('button')
-    btn.type = 'button'
-    btn.className = 'np-result'
 
-    const titleDiv = document.createElement('div')
-    titleDiv.className = 'np-result-title'
+    if (!el) {
+      el = document.createElement('button')
+      el.type = 'button'
+      el.className = 'np-result'
+
+      const titleDiv = document.createElement('div')
+      titleDiv.className = 'np-result-title'
+
+      const prevDiv = document.createElement('div')
+      prevDiv.className = 'np-result-preview'
+
+      el.append(titleDiv, prevDiv)
+      el._title = titleDiv
+      el._prev = prevDiv
+
+      el.addEventListener('click', () => {
+        const item = el._item
+        if (item) gotoResult(item)
+      })
+    }
+
+    el._item = r
+
     if (r.titleHit) {
-      titleDiv.innerHTML = makeSnippet(ch.title, r.titleHit[0], r.titleHit[1], 60)
+      el._title.innerHTML = makeSnippet(ch.title, r.titleHit[0], r.titleHit[1], 60)
     } else {
-      titleDiv.textContent = ch.title
+      el._title.textContent = ch.title
     }
 
-    const prevDiv = document.createElement('div')
-    prevDiv.className = 'np-result-preview'
     if (r.hit) {
-      prevDiv.innerHTML = makeSnippet(r.preview, r.hit[0], r.hit[1], 90)
+      el._prev.innerHTML = makeSnippet(r.preview, r.hit[0], r.hit[1], 90)
     } else {
-      const p = r.preview
-      prevDiv.textContent = p.length > 90 ? p.slice(0, 90) + '…' : p
+      const p = r.preview || ''
+      el._prev.textContent = p.length > 90 ? p.slice(0, 90) + '…' : p
     }
 
-    btn.append(titleDiv, prevDiv)
-    btn.addEventListener('click', () => gotoResult(r))
-
-    return btn
+    return el
   }
 
-  function gotoResult (r) {
+  function gotoResult(r) {
     closeSearch(true)
     renderChapter(r.ci, { restore: false })
 
@@ -1442,7 +1589,7 @@
   /* ================================================================
    * 主题色提取
    * ================================================================ */
-  function syncSurface () {
+  function syncSurface() {
     const bg = getComputedStyle(document.body).backgroundColor
     const m = bg && bg.match(/rgba?\(([^)]+)\)/)
     if (!m) return
@@ -1467,7 +1614,7 @@
   /* ================================================================
    * 下载
    * ================================================================ */
-  async function download (entry, onProgress) {
+  async function download(entry, onProgress) {
     const res = await fetch(entry.uri)
     if (!res.ok) throw new Error('HTTP ' + res.status)
 
@@ -1486,7 +1633,7 @@
     let received = 0
 
     try {
-      for (;;) {
+      for (; ;) {
         const { done, value } = await rdr.read()
         if (done) break
         chunks.push(value)
@@ -1511,7 +1658,7 @@
   /* ================================================================
    * 主流程
    * ================================================================ */
-  async function open (entry) {
+  async function open(entry) {
     const my = ++session
 
     chapters = []
@@ -1525,6 +1672,7 @@
     searchInput.value = ''
     updateSearchHasValue()
     searchVirtual.showEmpty('')
+    setSearchTip('')
     tocVirtual.setItems([])
     closeToc()
     closeSearch(true)
@@ -1625,7 +1773,7 @@
     hideLoading()
   }
 
-  function close () {
+  function close() {
     session++
 
     if (activeReader) {
@@ -1665,7 +1813,9 @@
   /* ================================================================
    * 初始化
    * ================================================================ */
-  function init () {
+  function init() {
+    ensureViewport()
+
     fontSize = loadFontSize()
     buildUI()
 
@@ -1684,7 +1834,7 @@
       document.addEventListener('fullscreenchange', () => {
         if (document.fullscreenElement) return
         if (!root.classList.contains('np-visible')) return
-        document.addEventListener('click', function reenter () {
+        document.addEventListener('click', function reenter() {
           if (root.classList.contains('np-visible') && !document.fullscreenElement) {
             requestFullscreen()
           }

@@ -72,30 +72,40 @@
     const head = document.head || document.getElementsByTagName('head')[0]
     if (!head) return
 
-    let meta = head.querySelector('meta[name="viewport"]')
+      let meta = head.querySelector('meta[name="viewport"]')
 
-    if (!meta) {
-      meta = document.createElement('meta')
-      meta.setAttribute('name', 'viewport')
-      meta.setAttribute('content', 'width=device-width, initial-scale=1')
-      head.appendChild(meta)
-      return
-    }
+      if (!meta) {
+        meta = document.createElement('meta')
+        meta.setAttribute('name', 'viewport')
+        meta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover')
+        head.appendChild(meta)
+        return
+      }
 
-    // 如果已存在，提取现有的 content 转化成键值对进行精细化更新/补充
-    let content = meta.getAttribute('content') || ''
+      let content = meta.getAttribute('content') || ''
 
-    // 简易替换或拼接示例：确保 width 和 initial-scale 正确
-    if (!/width\s*=\s*device-width/i.test(content)) {
-      content = content.replace(/width\s*=\s*[^,]+/i, '').trim()
-      content = content ? `${content}, width=device-width` : 'width=device-width'
-    }
-    if (!/initial-scale\s*=\s*1/i.test(content)) {
-      content = content.replace(/initial-scale\s*=\s*[^,]+/i, '').trim()
-      content = content ? `${content}, initial-scale=1` : 'initial-scale=1'
-    }
+      if (!/width\s*=\s*device-width/i.test(content)) {
+        content = content.replace(/width\s*=\s*[^,]+/i, '').trim()
+        content = content ? `${content}, width=device-width` : 'width=device-width'
+      }
 
-    meta.setAttribute('content', content.replace(/^,\s*|,\s*$/g, ''))
+      if (!/initial-scale\s*=\s*1(\.0)?/i.test(content)) {
+        content = content.replace(/initial-scale\s*=\s*[^,]+/i, '').trim()
+        content = content ? `${content}, initial-scale=1.0` : 'initial-scale=1.0'
+      }
+
+      if (!/viewport-fit\s*=\s*cover/i.test(content)) {
+        content = content.replace(/viewport-fit\s*=\s*[^,]+/i, '').trim()
+        content = content ? `${content}, viewport-fit=cover` : 'viewport-fit=cover'
+      }
+
+      content = content
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .join(', ')
+
+      meta.setAttribute('content', content)
   }
 
   /* ================================================================
@@ -536,7 +546,10 @@
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
-    padding: 20px;
+    padding-left: max(20px, env(safe-area-inset-left));
+    padding-right: max(20px, env(safe-area-inset-right));
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
     font-size: var(--np-font-size);
     line-height: var(--np-line-height);
     outline: none;

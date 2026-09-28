@@ -47,15 +47,6 @@
   /* ================================================================
    * 工具
    * ================================================================ */
-  function isMobile() {
-    const ua = navigator.userAgent || ''
-    if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|Windows Phone|IEMobile|Opera Mini|Mobi/i.test(ua)) return true
-    if (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua)) return true
-    return false
-  }
-
-  const MOBILE = isMobile()
-
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -733,7 +724,7 @@
     background: var(--np-hover);
     color: inherit;
     font-family: inherit;
-    font-size: 15px;
+    font-size: 16px;
     outline: none;
     -webkit-appearance: none;
     appearance: none;
@@ -1554,7 +1545,12 @@
     const el = readerEl.children[lineIdx]
 
     if (el) {
-      readerEl.scrollTop = el.offsetTop
+      // 计算居中位置：元素的 offsetTop - (阅读器容器高度 / 2) + (元素自身高度 / 2)
+      const targetScroll = el.offsetTop - (readerEl.clientHeight / 2) + (el.offsetHeight / 2)
+
+      // 确保 scrollTop 不小于 0
+      readerEl.scrollTop = Math.max(0, targetScroll)
+
       el.classList.remove('np-flash')
       void el.offsetWidth
       el.classList.add('np-flash')

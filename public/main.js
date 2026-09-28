@@ -72,48 +72,37 @@
     const head = document.head || document.getElementsByTagName('head')[0]
     if (!head) return
 
-      let meta = head.querySelector('meta[name="viewport"]')
+    let meta = head.querySelector('meta[name="viewport"]')
+    if (!meta) {
+      meta = document.createElement('meta')
+      meta.name = 'viewport'
+      meta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover')
+      head.appendChild(meta)
+      return
+    }
 
-      if (!meta) {
-        meta = document.createElement('meta')
-        meta.name = 'viewport'
-        meta.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover'
-        head.appendChild(meta)
-        return
-      }
+    const raw = meta.getAttribute('content') || ''
+    const params = new Map()
+    raw.split(/[,\s]+/).forEach(item => {
+      if (!item) return
+      const i = item.indexOf('=')
+      if (i < 0) return
+      const k = item.slice(0, i).trim().toLowerCase()
+      const v = item.slice(i + 1).trim()
+      if (k) params.set(k, v)
+    })
 
-      // 解析当前 content 为键值对 Map，避免正则替换导致的字符串污染
-      const currentContent = meta.getAttribute('content') || ''
-      const params = new Map()
+    let needUpdate = false
+    if (params.get('width') !== 'device-width') { params.set('width', 'device-width'); needUpdate = true }
+    const is = params.get('initial-scale')
+    if (is !== '1.0' && is !== '1') { params.set('initial-scale', '1.0'); needUpdate = true }
+    if (params.get('viewport-fit') !== 'cover') { params.set('viewport-fit', 'cover'); needUpdate = true }
 
-      currentContent.split(',').forEach(item => {
-        const [key, val] = item.split('=').map(s => s.trim())
-        if (key) params.set(key.toLowerCase(), val || '')
-      })
+    if (!needUpdate) return
 
-      let needUpdate = false
-
-      // 检查并修正必选参数
-      if (params.get('width') !== 'device-width') {
-        params.set('width', 'device-width')
-        needUpdate = true
-      }
-      if (params.get('initial-scale') !== '1.0' && params.get('initial-scale') !== '1') {
-        params.set('initial-scale', '1.0')
-        needUpdate = true
-      }
-      if (params.get('viewport-fit') !== 'cover') {
-        params.set('viewport-fit', 'cover')
-        needUpdate = true
-      }
-
-      // 仅在值发生实际变化时才更新 DOM，绝不多次触发 DOM 重绘
-      if (needUpdate) {
-        const newContent = Array.from(params.entries())
-        ? Array.from(params.entries()).map(([k, v]) => v ? `${k}=${v}` : k).join(', ')
-        : 'width=device-width, initial-scale=1.0, viewport-fit=cover'
-        meta.setAttribute('content', newContent)
-      }
+    const parts = []
+    params.forEach((v, k) => parts.push(v ? `${k}=${v}` : k))
+    meta.setAttribute('content', parts.join(', '))
   }
 
   /* ================================================================
@@ -1099,10 +1088,6 @@
       if (e.target.closest('a')) return
 
       root.classList.toggle('np-chrome-hidden')
-
-      if (MOBILE) {
-        requestFullscreen()
-      }
     })
 
     // 搜索输入：输入法合成中不触发搜索
@@ -1175,29 +1160,6 @@
     loadingEl.classList.add('np-hidden')
   }
 
-  /* ================================================================
-   * 全屏
-   * ================================================================ */
-  function requestFullscreen() {
-    if (!MOBILE) return
-    if (document.fullscreenElement) return
-    const el = document.documentElement
-    const fn = el.requestFullscreen || el.webkitRequestFullscreen
-    if (!fn) return
-    try {
-      const p = fn.call(el, { navigationUI: 'hide' })
-      if (p && typeof p.catch === 'function') p.catch(() => { })
-    } catch (e) { /* ignore */ }
-  }
-
-  function exitFullscreen() {
-    if (!MOBILE) return
-    if (!document.fullscreenElement) return
-    try {
-      const p = document.exitFullscreen()
-      if (p && typeof p.catch === 'function') p.catch(() => { })
-    } catch (e) { /* ignore */ }
-  }
 
   /* ================================================================
    * 字号
@@ -1714,8 +1676,6 @@
 
     showLoading('正在连接服务器…', 0, false)
 
-    requestFullscreen()
-
     progressKey = entry.path || entry.uri || entry.name || 'unknown'
     progress = loadProgress(progressKey)
 
@@ -1814,7 +1774,6 @@
 
     closeToc()
     closeSearch(true)
-    exitFullscreen()
 
     root.classList.remove('np-visible')
     root.classList.remove('np-chrome-hidden')
@@ -1852,19 +1811,6 @@
         })
       }
     })
-
-    if (MOBILE) {
-      document.addEventListener('fullscreenchange', () => {
-        if (document.fullscreenElement) return
-        if (!root.classList.contains('np-visible')) return
-        document.addEventListener('click', function reenter() {
-          if (root.classList.contains('np-visible') && !document.fullscreenElement) {
-            requestFullscreen()
-          }
-        }, { once: true, capture: true })
-      })
-    }
   }
-
   init()
 })()

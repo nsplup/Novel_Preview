@@ -76,36 +76,44 @@
 
       if (!meta) {
         meta = document.createElement('meta')
-        meta.setAttribute('name', 'viewport')
-        meta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover')
+        meta.name = 'viewport'
+        meta.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover'
         head.appendChild(meta)
         return
       }
 
-      let content = meta.getAttribute('content') || ''
+      // 解析当前 content 为键值对 Map，避免正则替换导致的字符串污染
+      const currentContent = meta.getAttribute('content') || ''
+      const params = new Map()
 
-      if (!/width\s*=\s*device-width/i.test(content)) {
-        content = content.replace(/width\s*=\s*[^,]+/i, '').trim()
-        content = content ? `${content}, width=device-width` : 'width=device-width'
+      currentContent.split(',').forEach(item => {
+        const [key, val] = item.split('=').map(s => s.trim())
+        if (key) params.set(key.toLowerCase(), val || '')
+      })
+
+      let needUpdate = false
+
+      // 检查并修正必选参数
+      if (params.get('width') !== 'device-width') {
+        params.set('width', 'device-width')
+        needUpdate = true
+      }
+      if (params.get('initial-scale') !== '1.0' && params.get('initial-scale') !== '1') {
+        params.set('initial-scale', '1.0')
+        needUpdate = true
+      }
+      if (params.get('viewport-fit') !== 'cover') {
+        params.set('viewport-fit', 'cover')
+        needUpdate = true
       }
 
-      if (!/initial-scale\s*=\s*1(\.0)?/i.test(content)) {
-        content = content.replace(/initial-scale\s*=\s*[^,]+/i, '').trim()
-        content = content ? `${content}, initial-scale=1.0` : 'initial-scale=1.0'
+      // 仅在值发生实际变化时才更新 DOM，绝不多次触发 DOM 重绘
+      if (needUpdate) {
+        const newContent = Array.from(params.entries())
+        ? Array.from(params.entries()).map(([k, v]) => v ? `${k}=${v}` : k).join(', ')
+        : 'width=device-width, initial-scale=1.0, viewport-fit=cover'
+        meta.setAttribute('content', newContent)
       }
-
-      if (!/viewport-fit\s*=\s*cover/i.test(content)) {
-        content = content.replace(/viewport-fit\s*=\s*[^,]+/i, '').trim()
-        content = content ? `${content}, viewport-fit=cover` : 'viewport-fit=cover'
-      }
-
-      content = content
-      .split(',')
-      .map(item => item.trim())
-      .filter(Boolean)
-      .join(', ')
-
-      meta.setAttribute('content', content)
   }
 
   /* ================================================================
@@ -1674,6 +1682,8 @@
    * 主流程
    * ================================================================ */
   async function open(entry) {
+    ensureViewport()
+
     const my = ++session
 
     chapters = []
@@ -1829,8 +1839,6 @@
    * 初始化
    * ================================================================ */
   function init() {
-    ensureViewport()
-
     fontSize = loadFontSize()
     buildUI()
 
